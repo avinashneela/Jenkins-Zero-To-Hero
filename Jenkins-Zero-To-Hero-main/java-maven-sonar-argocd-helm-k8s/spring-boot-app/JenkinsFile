@@ -1,103 +1,104 @@
 pipeline {
-  agent {
-    docker {
-      image 'maven:3.9.6-eclipse-temurin-17'
-      args '--user root -v /var/run/docker.sock:/var/run/docker.sock'
-    }
-  }
+  agent none
 
   environment {
-    PROJECT_DIR = "Jenkins-Zero-To-Hero-main/java-maven-sonar-argocd-helm-k8s/spring-boot-app"
-    MANIFEST_FILE = "Jenkins-Zero-To-Hero-main/java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml"
+    PROJECT_DIR   = "Jenkins-Zero-To-Hero-main/java-maven-sonar-argocd-helm-k8s/spring-boot-app"
+    MANIFEST_PATH = "Jenkins-Zero-To-Hero-main/java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml"
+    SONAR_URL     = "http://15.207.237.18:9000"
+    DOCKERHUB_USERNAME = "avinash27112002"
+    GIT_REPO_NAME = "Jenkins-Zero-To-Hero"
+    GIT_USER_NAME = "avinashneela"
   }
 
   stages {
+
     stage('Checkout') {
+      agent any
       steps {
         checkout scm
-        sh 'ls -ltr'
+        sh 'pwd && ls -la'
       }
     }
 
-    stage('Tool Versions') {
-      steps {
-        sh 'java -version'
-        sh 'mvn -version'
-      }
-    }
-
-    // ✅ NEW: Install Docker CLI so "docker build" works inside this container
-    stage('Install Docker CLI') {
-      steps {
-        sh '''
-          set -e
-          if command -v docker >/dev/null 2>&1; then
-            echo "Docker CLI already present"
-            docker --version
-          else
-            echo "Installing Docker CLI..."
-            apt-get update
-            apt-get install -y docker.io
-            docker --version
-          fi
-        '''
-      }
-    }
-
-    stage('Build and Test') {
-      steps {
-        dir("${PROJECT_DIR}") {
-          sh 'mvn clean package'
+    stage('Build + Test + Sonar + Docker Build/Push') {
+      agent {
+        docker {
+          image 'maven:3.9.6-eclipse-temurin-17'
+          args '--user root -v /var/run/docker.sock:/var/run/docker.sock'
         }
       }
-    }
+      stages {
 
-    stage('Static Code Analysis') {
-      environment {
-        SONAR_URL = "http://15.207.237.18:9000"
-      }
-      steps {
-        withCredentials([string(credentialsId: 'sonarqube', variable: 'SONAR_AUTH_TOKEN')]) {
-          dir("${PROJECT_DIR}") {
-            sh 'mvn sonar:sonar -Dsonar.login=$SONAR_AUTH_TOKEN -Dsonar.host.url=$SONAR_URL'
+        stage('Install Docker CLI') {
+          steps {
+            sh '''
+              set -e
+              if command -v docker >/dev/null 2>&1; then
+                docker --version
+              else
+                apt-get update
+                apt-get install -y docker.io
+                docker --version
+              fi
+            '''
           }
         }
-      }
-    }
 
-    stage('Build and Push Docker Image') {
-      environment {
-        DOCKER_IMAGE = "avinash27112002/ultimate-cicd:${BUILD_NUMBER}"
-      }
-      steps {
-        script {
-          dir("${PROJECT_DIR}") {
-            sh 'docker version'
-            sh 'docker build -t ${DOCKER_IMAGE} .'
+        stage('Build and Test') {
+          steps {
+            dir("${PROJECT_DIR}") {
+              sh 'mvn clean package'
+            }
           }
+        }
 
-          def dockerImage = docker.image("${DOCKER_IMAGE}")
-          docker.withRegistry('https://index.docker.io/v1/', "docker-cred") {
-            dockerImage.push()
+        stage('Static Code Analysis') {
+          steps {
+            withCredentials([string(credentialsId: 'sonarqube', variable: 'SONAR_AUTH_TOKEN')]) {
+              dir("${PROJECT_DIR}") {
+                sh 'mvn sonar:sonar -Dsonar.login=$SONAR_AUTH_TOKEN -Dsonar.host.url=$SONAR_URL'
+              }
+            }
+          }
+        }
+
+        stage('Build and Push Docker Image') {
+          environment {
+            DOCKER_IMAGE = "${DOCKERHUB_USERNAME}/ultimate-cicd:${BUILD_NUMBER}"
+          }
+          steps {
+            script {
+              dir("${PROJECT_DIR}") {
+                sh 'docker build -t ${DOCKER_IMAGE} .'
+              }
+              def dockerImage = docker.image("${DOCKER_IMAGE}")
+              docker.withRegistry('https://index.docker.io/v1/', "docker-cred") {
+                dockerImage.push()
+              }
+            }
           }
         }
       }
     }
 
     stage('Update Deployment File') {
-      environment {
-        GIT_REPO_NAME = "Jenkins-Zero-To-Hero"
-        GIT_USER_NAME = "avinashneela"
-      }
+      agent any
       steps {
+        // ✅ Checkout again on this node workspace (guarantees .git exists here)
+        checkout scm
+
+        sh 'pwd && ls -la && git status'
+
         withCredentials([string(credentialsId: 'github', variable: 'GITHUB_TOKEN')]) {
           sh """
+            set -e
+
             git config user.email "avinashneela27@gmail.com"
             git config user.name "Avinash"
 
-            sed -i "s/replaceImageTag/${BUILD_NUMBER}/g" ${MANIFEST_FILE}
+            sed -i "s/replaceImageTag/${BUILD_NUMBER}/g" ${MANIFEST_PATH}
 
-            git add ${MANIFEST_FILE}
+            git add ${MANIFEST_PATH}
             git commit -m "Update deployment image to version ${BUILD_NUMBER}" || true
 
             git push https://${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME}.git HEAD:main
