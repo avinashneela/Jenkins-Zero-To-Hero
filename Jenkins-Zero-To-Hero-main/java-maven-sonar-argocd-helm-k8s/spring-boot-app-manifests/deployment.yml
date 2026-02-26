@@ -1,21 +1,28 @@
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: spring-boot-app
-  labels:
-    app: spring-boot-app
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: spring-boot-app
-  template:
-    metadata:
-      labels:
-        app: spring-boot-app
-    spec:
-      containers:
-      - name: spring-boot-app
-        image: avinash27112002/ultimate-cicd:replaceImageTag
-        ports:
-        - containerPort: 8080
+stage('Update Deployment File') {
+  steps {
+    withCredentials([string(credentialsId: 'github', variable: 'GITHUB_TOKEN')]) {
+
+      dir('Jenkins-Zero-To-Hero-main') {
+
+        sh """
+          set -e
+
+          echo "Current path:"
+          pwd
+          ls -la
+
+          git config user.email "avinashneela27@gmail.com"
+          git config user.name "Avinash"
+
+          sed -i "s/replaceImageTag/${BUILD_NUMBER}/g" \
+          java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
+
+          git add java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
+          git commit -m "Update deployment image to version ${BUILD_NUMBER}" || true
+
+          git push https://${GITHUB_TOKEN}@github.com/avinashneela/Jenkins-Zero-To-Hero.git HEAD:main
+        """
+      }
+    }
+  }
+}
